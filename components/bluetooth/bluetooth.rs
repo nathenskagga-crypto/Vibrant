@@ -33,11 +33,13 @@ pub struct BtleplugDiscoverySession {
 #[cfg(feature = "native-bluetooth")]
 impl BtleplugDiscoverySession {
     pub async fn start_discovery(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self.adapter.start_scan(ScanFilter::default()).await?)
+        self.adapter.start_scan(ScanFilter::default()).await?;
+        Ok(())
     }
 
     pub async fn stop_discovery(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self.adapter.stop_scan().await?)
+        self.adapter.stop_scan().await?;
+        Ok(())
     }
 }
 
@@ -53,7 +55,7 @@ impl BtleplugDevice {
         self.peripheral
             .properties()
             .await?
-            .ok_or_else(|| Box::from("Device properties not available"))
+            .ok_or_else(|| "Device properties not available".into())
     }
 
     pub fn get_id(&self) -> String {
@@ -68,13 +70,10 @@ impl BtleplugDevice {
 
     pub async fn get_name(&self) -> Result<String, Box<dyn Error>> {
         let props = self.properties().await?;
-        if let Some(name) = props.local_name {
-            return Ok(name);
-        }
-        if let Some(name) = props.advertisement_name {
-            return Ok(name);
-        }
-        Err(Box::from("Device name not available"))
+        props
+            .local_name
+            .or(props.advertisement_name)
+            .ok_or_else(|| "Device name not available".into())
     }
 
     pub async fn get_uuids(&self) -> Result<Vec<String>, Box<dyn Error>> {
@@ -88,15 +87,17 @@ impl BtleplugDevice {
     }
 
     pub async fn is_connected(&self) -> Result<bool, Box<dyn Error>> {
-        Ok(self.peripheral.is_connected().await.map_err(Box::new)?)
+        Ok(self.peripheral.is_connected().await?)
     }
 
     pub async fn connect(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self.peripheral.connect().await.map_err(Box::new)?)
+        self.peripheral.connect().await?;
+        Ok(())
     }
 
     pub async fn disconnect(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self.peripheral.disconnect().await.map_err(Box::new)?)
+        self.peripheral.disconnect().await?;
+        Ok(())
     }
 
     pub async fn get_manufacturer_data(&self) -> Result<HashMap<u16, Vec<u8>>, Box<dyn Error>> {
@@ -114,14 +115,11 @@ impl BtleplugDevice {
     }
 
     pub async fn discover_services(&self) -> Result<Vec<BluetoothGATTService>, Box<dyn Error>> {
-        self.peripheral
-            .discover_services()
-            .await
-            .map_err(Box::new)?;
+        self.peripheral.discover_services().await?;
 
         let device_id = self.peripheral.id().to_string();
         let services = self.peripheral.services();
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(services.len());
         let mut uuid_counts: HashMap<String, usize> = HashMap::new();
 
         for service in services {
@@ -168,23 +166,22 @@ impl BtleplugGATTService {
     }
 
     pub fn get_gatt_characteristics(&self) -> Vec<BluetoothGATTCharacteristic> {
-        let mut result = Vec::new();
         let mut uuid_counts: HashMap<String, usize> = HashMap::new();
-
-        for characteristic in &self.service.characteristics {
-            let uuid_str = characteristic.uuid.to_string();
-            let idx = uuid_counts.entry(uuid_str.clone()).or_default();
-            let instance_id = format!("{}/char/{uuid_str}/{idx}", self.instance_id);
-            *idx += 1;
-            result.push(BluetoothGATTCharacteristic::Btleplug(
-                BtleplugGATTCharacteristic {
+        self.service
+            .characteristics
+            .iter()
+            .map(|characteristic| {
+                let uuid_str = characteristic.uuid.to_string();
+                let idx = uuid_counts.entry(uuid_str.clone()).or_default();
+                let instance_id = format!("{}/char/{uuid_str}/{idx}", self.instance_id);
+                *idx += 1;
+                BluetoothGATTCharacteristic::Btleplug(BtleplugGATTCharacteristic {
                     instance_id,
                     characteristic: characteristic.clone(),
                     peripheral: self.peripheral.clone(),
-                },
-            ));
-        }
-        result
+                })
+            })
+            .collect()
     }
 }
 
@@ -208,89 +205,68 @@ impl BtleplugGATTCharacteristic {
 
     pub fn get_flags(&self) -> Result<Vec<String>, Box<dyn Error>> {
         let props = self.characteristic.properties;
-        let mut flags = Vec::new();
-
-        if props.contains(CharPropFlags::BROADCAST) {
-            flags.push("broadcast".to_string());
-        }
-        if props.contains(CharPropFlags::READ) {
-            flags.push("read".to_string());
-        }
-        if props.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) {
-            flags.push("write-without-response".to_string());
-        }
-        if props.contains(CharPropFlags::WRITE) {
-            flags.push("write".to_string());
-        }
-        if props.contains(CharPropFlags::NOTIFY) {
-            flags.push("notify".to_string());
-        }
-        if props.contains(CharPropFlags::INDICATE) {
-            flags.push("indicate".to_string());
-        }
-        if props.contains(CharPropFlags::AUTHENTICATED_SIGNED_WRITES) {
-            flags.push("authenticated-signed-writes".to_string());
-        }
-        Ok(flags)
+        let mapping = [
+            (CharPropFlags::BROADCAST, "broadcast"),
+            (CharPropFlags::READ, "read"),
+            (CharPropFlags::WRITE_WITHOUT_RESPONSE, "write-without-response"),
+            (CharPropFlags::WRITE, "write"),
+            (CharPropFlags::NOTIFY, "notify"),
+            (CharPropFlags::INDICATE, "indicate"),
+            (CharPropFlags::AUTHENTICATED_SIGNED_WRITES, "authenticated-signed-writes"),
+        ];
+        Ok(mapping
+            .iter()
+            .filter(|(flag, _)| props.contains(*flag))
+            .map(|(_, name)| name.to_string())
+            .collect())
     }
 
     pub fn get_gatt_descriptors(&self) -> Vec<BluetoothGATTDescriptor> {
-        let mut result = Vec::new();
         let mut uuid_counts: HashMap<String, usize> = HashMap::new();
-
-        for descriptor in &self.characteristic.descriptors {
-            let uuid_str = descriptor.uuid.to_string();
-            let idx = uuid_counts.entry(uuid_str.clone()).or_default();
-            let instance_id = format!("{}/desc/{uuid_str}/{idx}", self.instance_id);
-            *idx += 1;
-            result.push(BluetoothGATTDescriptor::Btleplug(BtleplugGATTDescriptor {
-                instance_id,
-                descriptor: descriptor.clone(),
-                peripheral: self.peripheral.clone(),
-            }));
-        }
-        result
+        self.characteristic
+            .descriptors
+            .iter()
+            .map(|descriptor| {
+                let uuid_str = descriptor.uuid.to_string();
+                let idx = uuid_counts.entry(uuid_str.clone()).or_default();
+                let instance_id = format!("{}/desc/{uuid_str}/{idx}", self.instance_id);
+                *idx += 1;
+                BluetoothGATTDescriptor::Btleplug(BtleplugGATTDescriptor {
+                    instance_id,
+                    descriptor: descriptor.clone(),
+                    peripheral: self.peripheral.clone(),
+                })
+            })
+            .collect()
     }
 
     pub async fn read_value(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(self
-            .peripheral
-            .read(&self.characteristic)
-            .await
-            .map_err(Box::new)?)
+        Ok(self.peripheral.read(&self.characteristic).await?)
     }
 
     pub async fn write_value(&self, values: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        let write_type = if self
-            .characteristic
-            .properties
-            .contains(CharPropFlags::WRITE)
-        {
+        let props = self.characteristic.properties;
+        let write_type = if props.contains(CharPropFlags::WRITE) {
             WriteType::WithResponse
-        } else {
+        } else if props.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE) {
             WriteType::WithoutResponse
+        } else {
+            return Err("Characteristic does not support writing".into());
         };
-        Ok(self
-            .peripheral
+        self.peripheral
             .write(&self.characteristic, &values, write_type)
-            .await
-            .map_err(Box::new)?)
+            .await?;
+        Ok(())
     }
 
     pub async fn start_notify(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self
-            .peripheral
-            .subscribe(&self.characteristic)
-            .await
-            .map_err(Box::new)?)
+        self.peripheral.subscribe(&self.characteristic).await?;
+        Ok(())
     }
 
     pub async fn stop_notify(&self) -> Result<(), Box<dyn Error>> {
-        Ok(self
-            .peripheral
-            .unsubscribe(&self.characteristic)
-            .await
-            .map_err(Box::new)?)
+        self.peripheral.unsubscribe(&self.characteristic).await?;
+        Ok(())
     }
 }
 
@@ -317,19 +293,14 @@ impl BtleplugGATTDescriptor {
     }
 
     pub async fn read_value(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(self
-            .peripheral
-            .read_descriptor(&self.descriptor)
-            .await
-            .map_err(Box::new)?)
+        Ok(self.peripheral.read_descriptor(&self.descriptor).await?)
     }
 
     pub async fn write_value(&self, values: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        Ok(self
-            .peripheral
+        self.peripheral
             .write_descriptor(&self.descriptor, &values)
-            .await
-            .map_err(Box::new)?)
+            .await?;
+        Ok(())
     }
 }
 
@@ -460,10 +431,10 @@ impl BluetoothDevice {
                 let services = inner.get_gatt_services()?;
                 Ok(services
                     .into_iter()
-                    .map(|service| {
+                    .map(|s| {
                         BluetoothGATTService::Mock(FakeBluetoothGATTService::new_empty(
                             inner.clone(),
-                            service,
+                            s,
                         ))
                     })
                     .collect())
@@ -559,7 +530,7 @@ impl BluetoothGATTService {
                 FakeBluetoothGATTService::new_empty(fake_device, service),
             )),
             #[cfg(feature = "native-bluetooth")]
-            _ => Err(Box::from("The first parameter must be a mock structure")),
+            _ => Err("The first parameter must be a mock structure".into()),
         }
     }
 
@@ -602,7 +573,7 @@ impl BluetoothGATTService {
         };
         Ok(services
             .into_iter()
-            .map(|service| BluetoothGATTService::create_service(device.clone(), service))
+            .map(|s| Self::create_service(device.clone(), s))
             .collect())
     }
 
@@ -617,12 +588,9 @@ impl BluetoothGATTService {
                 let characteristics = inner.get_gatt_characteristics()?;
                 Ok(characteristics
                     .into_iter()
-                    .map(|characteristic| {
+                    .map(|c| {
                         BluetoothGATTCharacteristic::Mock(
-                            FakeBluetoothGATTCharacteristic::new_empty(
-                                inner.clone(),
-                                characteristic,
-                            ),
+                            FakeBluetoothGATTCharacteristic::new_empty(inner.clone(), c),
                         )
                     })
                     .collect())
@@ -669,7 +637,7 @@ impl BluetoothGATTCharacteristic {
                 FakeBluetoothGATTCharacteristic::new_empty(fake_service, characteristic),
             )),
             #[cfg(feature = "native-bluetooth")]
-            _ => Err(Box::from("The first parameter must be a mock structure")),
+            _ => Err("The first parameter must be a mock structure".into()),
         }
     }
 
@@ -709,10 +677,10 @@ impl BluetoothGATTCharacteristic {
                 let descriptors = inner.get_gatt_descriptors()?;
                 Ok(descriptors
                     .into_iter()
-                    .map(|descriptor| {
+                    .map(|d| {
                         BluetoothGATTDescriptor::Mock(FakeBluetoothGATTDescriptor::new_empty(
                             inner.clone(),
-                            descriptor,
+                            d,
                         ))
                     })
                     .collect())
@@ -802,7 +770,7 @@ impl BluetoothGATTDescriptor {
                     FakeBluetoothGATTDescriptor::new_empty(fake_characteristic, descriptor),
                 ))
             },
-            _ => Err(Box::from("The first parameter must be a mock structure")),
+            _ => Err("The first parameter must be a mock structure".into()),
         }
     }
 
