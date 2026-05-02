@@ -45,8 +45,7 @@ impl CanvasPaintThread {
         thread::Builder::new()
             .name("Canvas".to_owned())
             .spawn(move || {
-                let mut canvas_paint_thread = CanvasPaintThread::new(
-                    paint_api);
+                let mut canvas_paint_thread = CanvasPaintThread::new(paint_api);
                 loop {
                     select! {
                         recv(msg_receiver) -> msg => {
@@ -224,7 +223,7 @@ impl CanvasPaintThread {
                 composition_options,
                 transform,
             ) => self.canvas(canvas_id).draw_image(
-                snapshot.to_owned(),
+                snapshot,
                 dest_rect,
                 source_rect,
                 smoothing_enabled,
@@ -276,7 +275,7 @@ impl CanvasPaintThread {
             },
             Canvas2dMsg::PutImageData(rect, snapshot) => {
                 self.canvas(canvas_id)
-                    .put_image_data(snapshot.to_owned(), rect);
+                    .put_image_data(snapshot, rect);
             },
             Canvas2dMsg::UpdateImage(canvas_epoch) => {
                 self.canvas(canvas_id).update_image_rendering(canvas_epoch);
