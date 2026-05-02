@@ -288,6 +288,13 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
                 continue;
             };
 
+            if self.running_readwrite == Some(txn) {
+                if !transaction.requests.is_empty() && self.queued_readwrite_set.insert(txn) {
+                    self.queued_readwrite.push_back(txn);
+                }
+                continue;
+            }
+
             if transaction.requests.is_empty() {
                 continue;
             }
@@ -397,10 +404,11 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
     }
 
     fn can_notify_txn_maybe_commit(&self, txn: u64) -> bool {
-        if self.queued_readonly_set.contains(&txn) || self.queued_readwrite_set.contains(&txn) {
+        if self.running_readwrite == Some(txn) || self.running_readonly.contains(&txn) {
             return false;
         }
-        if self.running_readwrite == Some(txn) || self.running_readonly.contains(&txn) {
+        // Avoid if the txn is still queued or has queued operations.
+        if self.queued_readonly_set.contains(&txn) || self.queued_readwrite_set.contains(&txn) {
             return false;
         }
         match self.transactions.get(&txn) {
@@ -451,14 +459,10 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         }
         self.txn_info.remove(&txn);
         self.transactions.remove(&txn);
-        // Only scan the VecDeques when the txn is actually present in the sets —
-        // retain is O(n) and the sets give us O(1) membership.
-        if self.queued_readonly_set.remove(&txn) {
-            self.queued_readonly.retain(|queued| *queued != txn);
-        }
-        if self.queued_readwrite_set.remove(&txn) {
-            self.queued_readwrite.retain(|queued| *queued != txn);
-        }
+        self.queued_readonly.retain(|queued| *queued != txn);
+        self.queued_readwrite.retain(|queued| *queued != txn);
+        self.queued_readonly_set.remove(&txn);
+        self.queued_readwrite_set.remove(&txn);
         if self.running_readwrite == Some(txn) {
             self.running_readwrite = None;
         }
@@ -472,14 +476,10 @@ impl<E: KvsEngine> IndexedDBEnvironment<E> {
         // Keep scheduling metadata until script reports TransactionFinished.
         // https://w3c.github.io/IndexedDB/#transaction-lifetime
         self.transactions.remove(&txn);
-        // Only scan the VecDeques when the txn is actually present in the sets —
-        // retain is O(n) and the sets give us O(1) membership.
-        if self.queued_readonly_set.remove(&txn) {
-            self.queued_readonly.retain(|queued| *queued != txn);
-        }
-        if self.queued_readwrite_set.remove(&txn) {
-            self.queued_readwrite.retain(|queued| *queued != txn);
-        }
+        self.queued_readonly.retain(|queued| *queued != txn);
+        self.queued_readwrite.retain(|queued| *queued != txn);
+        self.queued_readonly_set.remove(&txn);
+        self.queued_readwrite_set.remove(&txn);
         if self.running_readwrite == Some(txn) {
             self.running_readwrite = None;
         }
@@ -1153,12 +1153,15 @@ impl IndexedDBManager {
         origin: ImmutableOrigin,
         proxy_map: StorageProxyMap,
     ) {
-        for (name, ids) in pending_upgrades {
+        for (name, ids) in pending_upgrades.into_iter() {
             let mut version_to_revert: Option<u64> = None;
             let key = IndexedDBDescription {
                 name: name.clone(),
                 origin: origin.clone(),
             };
+            for id in ids.iter() {
+                self.remove_connection(&key, id);
+            }
             {
                 let is_empty = {
                     let Some(queue) = self.connection_queues.get_mut(&key) else {
@@ -1166,11 +1169,6 @@ impl IndexedDBManager {
                     };
                     queue.retain_mut(|open_request| {
                         if ids.contains(&open_request.get_id()) {
-                            // Remove the connection and collect the version to revert
-                            // in the same pass over the queue, avoiding a separate loop.
-                            self.connections
-                                .get_mut(&key)
-                                .and_then(|conns| conns.remove(&open_request.get_id()));
                             let old = open_request.abort();
                             if version_to_revert.is_none() {
                                 if let Some(old) = old {
@@ -1186,15 +1184,6 @@ impl IndexedDBManager {
                 };
                 if is_empty {
                     self.connection_queues.remove(&key);
-                }
-            }
-            // Clean up any connections whose ids were not in the queue.
-            if let Some(conns) = self.connections.get_mut(&key) {
-                for id in &ids {
-                    conns.remove(id);
-                }
-                if conns.is_empty() {
-                    self.connections.remove(&key);
                 }
             }
             if let Some(version) = version_to_revert {
@@ -1819,7 +1808,6 @@ impl IndexedDBManager {
             };
             if let OpenRequest::Open {
                 version,
-                id: _,
                 pending_upgrade,
                 pending_versionchange,
                 pending_close,
