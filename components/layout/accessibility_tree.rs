@@ -85,9 +85,10 @@ impl AccessibilityTree {
                 node.accesskit_node.set_label(text);
                 updated = true;
             }
-        }
-
-        if updated {
+            if updated {
+                tree_update.add(&node);
+            }
+        } else if updated {
             let node = self.assert_node_by_id(node_id);
             tree_update.add(&node.borrow());
         }
@@ -110,13 +111,13 @@ impl AccessibilityTree {
         }
 
         if let Some(dom_element) = dom_node.as_element() {
-            accesskit_node.set_role(Role::GenericContainer);
             let local_name = dom_element.local_name().to_ascii_lowercase();
             accesskit_node.set_html_tag(&*local_name);
             let role = HTML_ELEMENT_ROLE_MAPPINGS
                 .get(&local_name)
-                .unwrap_or(&Role::GenericContainer);
-            accesskit_node.set_role(*role);
+                .copied()
+                .unwrap_or(Role::GenericContainer);
+            accesskit_node.set_role(role);
         } else if dom_node.type_id() == Some(LayoutNodeType::Text) {
             accesskit_node.set_role(Role::TextRun);
             let text_content = dom_node.text_content();
@@ -147,13 +148,17 @@ impl AccessibilityTree {
                     }
                 },
                 _ => {
-                    for id in accesskit_node.children().iter().rev() {
-                        children.push_front(*id);
+                    for id in accesskit_node.children() {
+                        children.push_back(*id);
                     }
                 },
             }
         }
-        Some(text.trim().to_owned())
+        let text = text.trim().to_owned();
+        if text.is_empty() {
+            return None;
+        }
+        Some(text)
     }
 
     fn get_or_create_node(
@@ -304,4 +309,4 @@ static HTML_ELEMENT_ROLE_MAPPINGS: LazyLock<FxHashMap<LocalName, Role>> = LazyLo
 
 /// <https://w3c.github.io/aria/#namefromcontent>
 static NAME_FROM_CONTENTS_ROLES: LazyLock<FxHashSet<Role>> =
-    LazyLock::new(|| [(Role::Heading)].into_iter().collect());
+    LazyLock::new(|| [Role::Heading].into_iter().collect());
